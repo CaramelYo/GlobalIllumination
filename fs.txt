@@ -1,0 +1,430 @@
+#define SAMPLES 2
+#define MAXDEPTH 4
+#define ENABLE_NEXT_EVENT_PREDICTION
+
+// Uncomment to see how many samples never reach a light source
+//#define DEBUG
+
+// Not used for now
+#define DEPTH_RUSSIAN 2
+
+#define PI 3.14159265359
+#define DIFF 0
+#define SPEC 1
+#define REFR 2
+#define NUM_SPHERES 9
+#define NUM_RECS 2
+
+#define TLB 0
+#define TLU 1
+#define TRU 2
+#define TRB 3
+#define DRB 4
+#define DLB 5
+#define DLU 6
+#define DRU 7
+
+#define LS 0
+#define RS 1
+#define TS 2
+#define BS 3
+#define BACKS 4
+#define FS 5
+
+float seed = 0.;
+float rand() { return fract(sin(seed++)*43758.5453123); }
+
+struct Ray { vec3 o, d; };
+struct Sphere {
+	float r;
+	vec3 p, e, c;
+	int refl;
+};
+
+struct Surface
+{
+	//fixed
+	vec3 n;
+	vec3 p[4];
+};
+
+struct Rectangle 
+{
+    vec3  c, e;
+    int refl;
+	//vec3 p[8];
+
+	Surface s[6];
+};
+
+Sphere lightSourceVolume = Sphere(20., vec3(50., 81.6, 81.6), vec3(12.), vec3(0.), DIFF);
+Sphere spheres[NUM_SPHERES];
+void initSpheres() {
+	spheres[0] = Sphere(1e5, vec3(-1e5-30., 40.8, 81.6),	vec3(0.), vec3(.75, .25, .25), DIFF);
+	spheres[1] = Sphere(1e5, vec3( 1e5+99., 40.8, 81.6),vec3(0.), vec3(.25, .25, .75), DIFF);
+	spheres[2] = Sphere(1e5, vec3(50., 40.8, -1e5),		vec3(0.), vec3(.75), DIFF);
+	spheres[3] = Sphere(1e5, vec3(50., 40.8,  1e5+170.),vec3(0.), vec3(0.), DIFF);
+	spheres[4] = Sphere(1e5, vec3(50., -1e5, 81.6),		vec3(0.), vec3(.75), DIFF);
+	spheres[5] = Sphere(1e5, vec3(50.,  1e5+81.6, 81.6),vec3(0.), vec3(.75), DIFF);
+	//spheres[6] = Sphere(16.5, vec3(73., 16.5, 47.), 	vec3(0.), vec3(1.), SPEC);
+	//spheres[7] = Sphere(16.5, vec3(73.-50., 16.5, 78.), 	vec3(0.), vec3(1.), DIFF);
+	spheres[8] = Sphere(600., vec3(50., 681.33, 81.6),	vec3(12.), vec3(0.), DIFF);
+}
+
+//rectangle array
+Rectangle recs[NUM_RECS];
+//rectangle center
+vec3 boxACenter[NUM_RECS];
+//rectangle normal
+vec3 boxX = vec3(1.,0.,0.), boxY = vec3(0.,1.,0.), boxZ = vec3(0.,0.,1.);
+//rectangle x, y, z length
+float boxLength[NUM_RECS], boxWidth[NUM_RECS], boxHeight[NUM_RECS];        
+
+//rectangle initialization
+void initRectangle()
+{   
+    
+    vec3 axis = vec3(0.0,1.0,0.0);
+    float s = sin(70.);
+    float c = cos(70.);
+    float oc = 1.0 - c;
+    mat4 rot = mat4(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+                0.0,                                0.0,                                0.0,                                1.0);
+    
+    
+    boxACenter[0] = vec3(73., 16., 78.);
+    boxACenter[1] = vec3(17., 16., 47.);
+    boxLength[0] = 20.;
+    boxLength[1] = 20.;
+    boxWidth[0] = 16.;
+    boxWidth[1] = 20.;
+    boxHeight[0] = 20.;
+    boxHeight[1] = 20.;
+    
+    for(int i = 0; i<NUM_RECS; ++i)
+    {
+    recs[i].c = vec3(1.);
+    recs[i].e = vec3(0.);
+    recs[i].refl = DIFF;
+    
+	//left surface
+	recs[i].s[LS].n = -boxX;
+	recs[i].s[LS].p[0] = boxACenter[i] - boxX*boxLength[i] + boxY*boxWidth[i] - boxZ*boxHeight[i] ;	//RT
+	recs[i].s[LS].p[1] = boxACenter[i] - boxX*boxLength[i] + boxY*boxWidth[i] + boxZ*boxHeight[i];  //LT
+	recs[i].s[LS].p[2] = boxACenter[i] - boxX*boxLength[i] - boxY*boxWidth[i] - boxZ*boxHeight[i]; //RB
+	recs[i].s[LS].p[3] = boxACenter[i] - boxX*boxLength[i] - boxY*boxWidth[i] + boxZ*boxHeight[i]; //LB
+	//right surface
+	recs[i].s[RS].n = boxX;
+	recs[i].s[RS].p[0] = boxACenter[i] + boxX*boxLength[i] + boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[RS].p[1] = boxACenter[i] + boxX*boxLength[i] + boxY*boxWidth[i] + boxZ*boxHeight[i];  
+	recs[i].s[RS].p[2] = boxACenter[i] + boxX*boxLength[i] - boxY*boxWidth[i] - boxZ*boxHeight[i]; 
+    recs[i].s[RS].p[3] = boxACenter[i] + boxX*boxLength[i] - boxY*boxWidth[i] + boxZ*boxHeight[i]; 
+	//top surface
+	recs[i].s[TS].n = boxY;
+	recs[i].s[TS].p[0] = boxACenter[i] - boxX*boxLength[i] + boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[TS].p[1] = boxACenter[i] + boxX*boxLength[i] + boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[TS].p[2] = boxACenter[i] - boxX*boxLength[i] + boxY*boxWidth[i] + boxZ*boxHeight[i];
+	recs[i].s[TS].p[3] = boxACenter[i] + boxX*boxLength[i] + boxY*boxWidth[i] + boxZ*boxHeight[i];
+	//bottom surface
+	recs[i].s[BS].n = -boxY;
+	recs[i].s[BS].p[0] = boxACenter[i] - boxX*boxLength[i] - boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[BS].p[1] = boxACenter[i] + boxX*boxLength[i] - boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[BS].p[2] = boxACenter[i] - boxX*boxLength[i] - boxY*boxWidth[i] + boxZ*boxHeight[i];
+	recs[i].s[BS].p[3] = boxACenter[i] + boxX*boxLength[i] - boxY*boxWidth[i] + boxZ*boxHeight[i];
+    //back surface
+	recs[i].s[BACKS].n = -boxZ;
+	recs[i].s[BACKS].p[0] = boxACenter[i] - boxX*boxLength[i] + boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[BACKS].p[1] = boxACenter[i] + boxX*boxLength[i] + boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[BACKS].p[2] = boxACenter[i] - boxX*boxLength[i] - boxY*boxWidth[i] - boxZ*boxHeight[i];
+	recs[i].s[BACKS].p[3] = boxACenter[i] + boxX*boxLength[i] - boxY*boxWidth[i] - boxZ*boxHeight[i];
+	//front surface
+	recs[i].s[FS].n = boxZ;
+	recs[i].s[FS].p[0] = boxACenter[i] - boxX*boxLength[i] + boxY*boxWidth[i] + boxZ*boxHeight[i];
+	recs[i].s[FS].p[1] = boxACenter[i] + boxX*boxLength[i] + boxY*boxWidth[i] + boxZ*boxHeight[i];
+	recs[i].s[FS].p[2] = boxACenter[i] - boxX*boxLength[i] - boxY*boxWidth[i] + boxZ*boxHeight[i];
+	recs[i].s[FS].p[3] = boxACenter[i] + boxX*boxLength[i] - boxY*boxWidth[i] + boxZ*boxHeight[i];
+    }
+    for(int i = 0; i<NUM_RECS; ++i)
+    {
+        for(int j =0; j<6;j++){
+            
+        	recs[i].s[FS].p[j] -= boxACenter[i]; 
+       	 	recs[i].s[LS].p[j] -= boxACenter[i]; 
+      	  	recs[i].s[RS].p[j] -= boxACenter[i]; 
+     	   	recs[i].s[BACKS].p[j] -= boxACenter[i]; 
+       		recs[i].s[TS].p[j] -= boxACenter[i]; 
+       		recs[i].s[BS].p[j] -= boxACenter[i]; 
+            
+        	recs[i].s[FS].p[j] = vec3(rot * vec4(recs[i].s[FS].p[j],1.0));
+       	 	recs[i].s[LS].p[j] = vec3(rot*vec4(recs[i].s[LS].p[j],1.0) );
+      	  	recs[i].s[RS].p[j] = vec3(rot*vec4(recs[i].s[RS].p[j],1.0) );
+     	   	recs[i].s[BACKS].p[j] = vec3(rot*vec4(recs[i].s[BACKS].p[j],1.0));
+       		recs[i].s[TS].p[j] = vec3(rot*vec4(recs[i].s[TS].p[j],1.0));
+       		recs[i].s[BS].p[j] = vec3(rot*vec4(recs[i].s[BS].p[j],1.0));
+            
+        	recs[i].s[FS].p[j] += boxACenter[i];
+       	 	recs[i].s[LS].p[j] += boxACenter[i]; 
+      	  	recs[i].s[RS].p[j] += boxACenter[i]; 
+     	   	recs[i].s[BACKS].p[j] += boxACenter[i]; 
+       		recs[i].s[TS].p[j] += boxACenter[i]; 
+       		recs[i].s[BS].p[j] += boxACenter[i];
+        }
+        recs[i].s[FS].n = mat3(rot)*recs[i].s[FS].n ;
+    	recs[i].s[LS].n = mat3(rot)*recs[i].s[LS].n ;
+    	recs[i].s[RS].n = mat3(rot)*recs[i].s[RS].n ;
+    	recs[i].s[BACKS].n = mat3(rot)*recs[i].s[BACKS].n ;
+    	recs[i].s[TS].n = mat3(rot) *recs[i].s[TS].n;
+    	recs[i].s[BS].n = mat3(rot)*recs[i].s[BS].n ;
+        
+        s = sin(-65.);
+    	c = cos(-65.);
+    	oc = 1.0 - c;
+     	rot = mat4(oc * axis.x * axis.x + c,           oc * axis.x * axis.y - axis.z * s,  oc * axis.z * axis.x + axis.y * s,  0.0,
+                oc * axis.x * axis.y + axis.z * s,  oc * axis.y * axis.y + c,           oc * axis.y * axis.z - axis.x * s,  0.0,
+                oc * axis.z * axis.x - axis.y * s,  oc * axis.y * axis.z + axis.x * s,  oc * axis.z * axis.z + c,           0.0,
+                0.0,                                0.0,                                0.0,                                1.0);
+    
+    }
+}
+
+//the normal where intersect point is
+vec3 sn;
+
+
+//to judge what surface is the reflect surface
+float intersect(Rectangle re, Ray r, float temp)
+{
+    //to judge six surfaces
+	for(int i = 0; i<6; ++i)
+	{
+        //to get basic point and normal
+		vec3 c = re.s[i].p[0];
+		vec3 n = re.s[i].n;
+        
+        //to calculate the value of t, which intersect point = r.o + t*r.d
+		float t = ( dot(n, c) - dot(n, r.o) ) / dot(n, r.d);
+        
+        //to judge if t is reasonal
+        if(t >= 0.)
+        {
+		//to check if solution is reasonal
+		vec3 cv = (r.o + t*r.d) - c;
+		vec3 cp = re.s[i].p[1] - c;
+		vec3 cr = re.s[i].p[2] - c;
+
+		//positive projective
+		float cvp = ( dot(cv, cp) / dot(cp, cp) );
+		float cvr = ( dot(cv, cr ) / dot(cr, cr ) );
+		if( cvp >= 0. && cvp <= 1. && cvr >= 0. && cvr <= 1. )
+		{
+			//reasonal
+			if(temp > t)
+			{
+				temp = t;
+				sn = re.s[i].n;
+			}
+		}
+        }
+	}
+
+	return temp;
+}
+
+void RecAssign(out Rectangle r1, Rectangle r2)
+{
+    r1.c = r2.c;
+    r1.e = r2.e;
+    r1.refl = r2.refl;
+    for(int i = 0; i<6; ++i )
+    {
+        r1.s[i].n = r2.s[i].n;
+        for(int j = 0; j<4; ++j)
+    		r1.s[i].p[j]= r2.s[i].p[j];
+    }
+}
+
+//to detect if ray will hit or not
+float intersect(Sphere s, Ray r) {
+	vec3 op = s.p - r.o;
+	float t, epsilon = 1e-3, b = dot(op, r.d), det = b * b - dot(op, op) + s.r * s.r;
+	if (det < 0.) return 0.; else det = sqrt(det);
+	return (t = b - det) > epsilon ? t : ((t = b + det) > epsilon ? t : 0.);
+}
+
+int intersect(Ray r, out float t, out Sphere s, out Rectangle rec, out int mode, int avoid) {
+	//to init
+    int id = -1, omode = mode;
+	t = 1e5;
+	s = spheres[0];
+    RecAssign(rec, recs[0]);
+    
+    //to test spheres
+	for (int i = 0; i < NUM_SPHERES; ++i) {
+		Sphere S = spheres[i];
+		float d = intersect(S, r);
+		if ( (omode == 1 || i!=avoid) && d!=0. && d<t) 
+        { 
+            t = d; id = i; s=S; 
+            if(mode == 1)
+                mode = 0;
+        }
+	}
+        
+    //to test rectangles
+    for(int i = 0; i< NUM_RECS; ++i)
+    {
+        Rectangle R;
+        RecAssign(R, recs[i]);
+        int surface;
+        float rd = intersect(R, r, t);
+        if( (omode == 0 || i != avoid) && rd < t) 
+        {
+            t = rd; id = i; RecAssign(rec, R);
+            if(mode == 0)
+                mode = 1;
+        }
+    }
+    
+    return id;
+}
+
+vec3 jitter(vec3 d, float phi, float sina, float cosa) {
+	vec3 w = normalize(d), u = normalize(cross(w.yzx, w)), v = cross(w, u);
+	return (u*cos(phi) + v*sin(phi)) * sina + w * cosa;
+}
+
+vec3 radiance(Ray r) {
+	vec3 acc = vec3(0.);
+	vec3 mask = vec3(1.);
+	int id = -1;
+    int mode = 1;
+	
+	for (int depth = 0; depth < MAXDEPTH; ++depth) {
+        
+        //mode 0 => sphere  1 => rectangle
+		float t = 1e5;
+		Sphere obj;
+		Rectangle robj;
+        
+        if( (id = intersect(r, t, obj, robj, mode, id)) < 0 )
+        {
+            //ray dont collide with anything
+            break;
+        }
+        
+        //x is the intersection point
+		vec3 x = t * r.d + r.o;
+        
+        //n is the normal on x surface
+        vec3 n = mode == 0 ? normalize(x - obj.p) : normalize(sn);
+        vec3 nl = n * sign(-dot(n, r.d));
+
+		//vec3 f = obj.c;
+		//float p = dot(f, vec3(1.2126, 0.7152, 0.0722));
+		//if (depth > DEPTH_RUSSIAN || p == 0.) if (rand() < p) f /= p; else { acc += mask * obj.e * E; break; }
+
+		if ((mode == 0 && obj.refl == DIFF) || (mode == 1 && robj.refl == DIFF)) {
+			
+            float r2 = rand();
+            
+            
+            //the reflect sight of diffuse surface
+            vec3 d = jitter(nl, 2.*PI*rand(), sqrt(r2), sqrt(1. - r2));
+            
+			vec3 e = vec3(0.);
+            
+#ifdef ENABLE_NEXT_EVENT_PREDICTION
+			//for (int i = 0; i < NUM_SPHERES; ++i)
+			{
+				// Sphere s = sphere(i);
+				// if (dot(s.e, vec3(1.)) == 0.) continue;
+
+				// Normally we would loop over the light sources and
+				// cast rays toward them, but since there is only one
+				// light source, that is mostly occluded, here goes
+				// the ad hoc optimization:
+				Sphere s = lightSourceVolume;
+                Rectangle trobj;
+                RecAssign(trobj, recs[0]);
+                //sphere 8 is the light source
+				int i = 8;
+
+                //s => lightsourcevolume, the range that can be aceepted by light
+				vec3 l0 = s.p - x;
+				float cos_a_max = sqrt(1. - clamp(s.r * s.r / dot(l0, l0), 0., 1.));
+				float cosa = mix(cos_a_max, 1., rand());
+				vec3 l = jitter(l0, 2.*PI*rand(), sqrt(1. - cosa*cosa), cosa);
+
+                //to set shadow
+                int tmode = mode;
+                int temp = intersect(Ray(x, l), t, s, trobj, tmode, id);
+                
+				if ( tmode == 0 && temp == i) 
+                {
+                    //hit the light
+					float omega = 2. * PI * (1. - cos_a_max);
+					e += (spheres[8].e * clamp(dot(l, n),0.,1.) * omega) / PI;
+				}
+			}
+#endif
+            //color bleed
+			float E = 1.;//float(depth==0);
+			if(mode == 0)
+			{
+                //sphere
+				acc += mask * obj.e * E + mask * obj.c * e;
+				mask *= obj.c;
+			}
+			else
+			{
+                //rectangle
+				acc += mask * robj.e * E + mask * robj.c *e;
+				mask *= robj.c;
+			}
+            
+			r = Ray(x, d);
+            
+		} else if (obj.refl == SPEC) {
+			acc += mask * obj.e;
+			mask *= obj.c;
+			r = Ray(x, reflect(r.d, n));
+		} else {
+			float a=dot(n,r.d), ddn=abs(a);
+			float nc=1., nt=1.5, nnt=mix(nc/nt, nt/nc, float(a>0.));
+			float cos2t=1.-nnt*nnt*(1.-ddn*ddn);
+			r = Ray(x, reflect(r.d, n));
+			if (cos2t>0.) {
+				vec3 tdir = normalize(r.d*nnt + sign(a)*n*(ddn*nnt+sqrt(cos2t)));
+				float R0=(nt-nc)*(nt-nc)/((nt+nc)*(nt+nc)),
+					c = 1.-mix(ddn,dot(tdir, n),float(a>0.));
+				float Re=R0+(1.-R0)*c*c*c*c*c,P=.25+.5*Re,RP=Re/P,TP=(1.-Re)/(1.-P);
+				if (rand()<P) { mask *= RP; }
+				else { mask *= obj.c*TP; r = Ray(x, tdir); }
+			}
+		}
+	}
+	return acc;
+}
+
+void mainImage( out vec4 fragColor, in vec2 fragCoord ) {
+	initSpheres();
+    initRectangle();
+    vec2 st = fragCoord.xy / iResolution.xy;
+	seed = iGlobalTime + iResolution.y * fragCoord.x / iResolution.x + fragCoord.y / iResolution.y;
+	vec2 uv = 2. * fragCoord.xy / iResolution.xy - 1.;
+	vec3 camPos = vec3((2. * (iMouse.xy==vec2(0.)?.5*iResolution.xy:iMouse.xy) / iResolution.xy - 1.) * vec2(48., 40.) + vec2(50., 40.8), 169.);
+	vec3 cz = normalize(vec3(50., 40., 81.6) - camPos);
+	vec3 cx = vec3(1., 0., 0.);
+	vec3 cy = normalize(cross(cx, cz)); cx = cross(cz, cy);
+    
+    // Moving average (multipass code)
+	vec3 color = texture2D(iChannel0, st).rgb * float(iFrame);
+    color += radiance(Ray(camPos, normalize(.53135 * (iResolution.x/iResolution.y*uv.x * cx + uv.y * cy) + cz)));
+	
+    fragColor = vec4(color/float(iFrame + 1), 1.0);
+    
+    bool iMouseDown = !(iMouse.z < 0.);
+    if(iMouseDown){ fragColor = vec4(0.);}
+}
